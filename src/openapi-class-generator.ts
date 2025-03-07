@@ -1,34 +1,3 @@
-import {
-  IsString,
-  IsNumber,
-  IsBoolean,
-  IsDate,
-  IsArray,
-  IsObject,
-  ValidateNested,
-  IsOptional,
-  IsEnum,
-  Min,
-  Max,
-  MinLength,
-  MaxLength,
-  Matches,
-  IsEmail,
-  IsUrl,
-  IsIP,
-  IsUUID,
-  IsLatitude,
-  IsLongitude,
-  IsCreditCard,
-  IsPhoneNumber,
-  IsPostalCode,
-  IsISO8601,
-  IsMongoId,
-  IsInt,
-  IsPositive,
-  IsNegative,
-} from 'class-validator';
-import { Type } from 'class-transformer';
 import * as fs from 'fs';
 import * as path from 'path';
 import { OpenAPIDocument, OpenAPISchema, OpenAPIResponse } from './openapi-types';
@@ -203,41 +172,41 @@ function generateDecorators(schema: OpenAPISchema, propertyName: string, isRequi
   }
   
   if (schema.type === 'string') {
-    decorators.push('@IsString()');
-    
-    if (schema.minLength !== undefined) {
-      decorators.push(`@MinLength(${schema.minLength})`);
-    }
-    
-    if (schema.maxLength !== undefined) {
-      decorators.push(`@MaxLength(${schema.maxLength})`);
-    }
-    
-    if (schema.pattern) {
-      decorators.push(`@Matches(/${schema.pattern}/)`);
-    }
-    
-    if (schema.format) {
-      switch (schema.format) {
-        case 'email':
-          decorators.push('@IsEmail()');
-          break;
-        case 'uri':
-        case 'url':
-          decorators.push('@IsUrl()');
-          break;
-        case 'uuid':
-          decorators.push('@IsUUID()');
-          break;
-        case 'date':
-        case 'date-time':
-          decorators.push('@IsDate()');
-          decorators.push('@IsISO8601()');
-          break;
-        case 'ipv4':
-        case 'ipv6':
-          decorators.push('@IsIP()');
-          break;
+    if (schema.format === 'date' || schema.format === 'date-time') {
+      decorators.push('@IsDate()');
+      decorators.push('@Transform(({ value }) => value ? new Date(value) : value)');
+    } else {
+      decorators.push('@IsString()');
+      
+      if (schema.minLength !== undefined) {
+        decorators.push(`@MinLength(${schema.minLength})`);
+      }
+      
+      if (schema.maxLength !== undefined) {
+        decorators.push(`@MaxLength(${schema.maxLength})`);
+      }
+      
+      if (schema.pattern) {
+        decorators.push(`@Matches(/${schema.pattern}/)`);
+      }
+      
+      if (schema.format) {
+        switch (schema.format) {
+          case 'email':
+            decorators.push('@IsEmail()');
+            break;
+          case 'uri':
+          case 'url':
+            decorators.push('@IsUrl()');
+            break;
+          case 'uuid':
+            decorators.push('@IsUUID()');
+            break;
+          case 'ipv4':
+          case 'ipv6':
+            decorators.push('@IsIP()');
+            break;
+        }
       }
     }
   } else if (schema.type === 'number' || schema.type === 'integer') {
@@ -275,6 +244,27 @@ function generateDecorators(schema: OpenAPISchema, propertyName: string, isRequi
   }
   
   return decorators;
+}
+
+function getAllParentClasses(schema: OpenAPISchema, openApiDocument: OpenAPIDocument): string[] {
+  const parents: string[] = [];
+  
+  if (schema.allOf) {
+    for (const subSchema of schema.allOf) {
+      if (subSchema.$ref && subSchema.$ref.startsWith('#/components/schemas/')) {
+        const parentName = subSchema.$ref.replace('#/components/schemas/', '');
+        parents.push(parentName);
+        
+        // Recursively get parents of parent
+        const parentSchema = openApiDocument.components?.schemas?.[parentName];
+        if (parentSchema) {
+          parents.push(...getAllParentClasses(parentSchema, openApiDocument));
+        }
+      }
+    }
+  }
+  
+  return [...new Set(parents)]; // Remove duplicates
 }
 
 // Helper function to generate class property with decorators
@@ -331,7 +321,11 @@ function generateClassProperty(
   }
   
   if (schema.type === 'string') {
-    propertyType = 'string';
+    if (schema.format === 'date' || schema.format === 'date-time') {
+      propertyType = 'Date';
+    } else {
+      propertyType = 'string';
+    }
     
     if (schema.enum) {
       const enumName = getEnumNameFromProperty(propertyName, schema.enum, context, usedEnums);
@@ -533,6 +527,55 @@ ${nestedClassProperties.properties.join('\n')}
   return { property, nestedClasses, enums };
 }
 
+function mergeParentProperties(
+  schema: OpenAPISchema,
+  openApiDocument: OpenAPIDocument,
+  usedNames: Set<string>,
+  context: string
+): { properties: OpenAPISchema['properties']; required: string[] } {
+  const mergedProperties: OpenAPISchema['properties'] = {};
+  const mergedRequired: string[] = [];
+  
+  if (schema.allOf) {
+    for (const subSchema of schema.allOf) {
+      if (subSchema.$ref) {
+        const parentSchema = resolveRef(subSchema.$ref, openApiDocument);
+        if (parentSchema) {
+          // Recursively merge parent properties
+          const { properties: parentProps, required: parentRequired } = mergeParentProperties(
+            parentSchema,
+            openApiDocument,
+            usedNames,
+            context
+          );
+          
+          Object.assign(mergedProperties, parentProps);
+          mergedRequired.push(...(parentRequired || []));
+        }
+      } else {
+        // Direct properties in allOf
+        Object.assign(mergedProperties, subSchema.properties);
+        if (subSchema.required) {
+          mergedRequired.push(...subSchema.required);
+        }
+      }
+    }
+  }
+  
+  // Add own properties
+  if (schema.properties) {
+    Object.assign(mergedProperties, schema.properties);
+  }
+  if (schema.required) {
+    mergedRequired.push(...schema.required);
+  }
+  
+  return {
+    properties: mergedProperties,
+    required: [...new Set(mergedRequired)] // Remove duplicates
+  };
+}
+
 // Helper function to generate class properties from a schema
 function generateClassProperties(
   schema: OpenAPISchema,
@@ -548,15 +591,20 @@ function generateClassProperties(
   const enums: string[] = [];
   const usedProperties = new Set<string>();
   
-  // Get non-parent properties if this is a child class
-  const effectiveSchema = schema.allOf ? getNonParentProperties(schema, openApiDocument) : schema;
+  // Get merged properties from all parents
+  const { properties: mergedProperties, required: mergedRequired } = mergeParentProperties(
+    schema,
+    openApiDocument,
+    usedNames,
+    context
+  );
   
-  if (effectiveSchema.properties) {
-    for (const [propertyName, propertySchema] of Object.entries(effectiveSchema.properties)) {
+  if (mergedProperties) {
+    for (const [propertyName, propertySchema] of Object.entries(mergedProperties)) {
       const { property, nestedClasses: propNestedClasses, enums: propEnums } = generateClassProperty(
         propertyName,
         propertySchema,
-        effectiveSchema.required || required,
+        mergedRequired || required,
         classMap,
         openApiDocument,
         usedNames,
@@ -609,13 +657,12 @@ export function generateClassesFromOpenAPI(openApiFilePath: string, outputFilePa
   IsCreditCard,
   IsPhoneNumber,
   IsPostalCode,
-  IsISO8601,
   IsMongoId,
   IsInt,
   IsPositive,
   IsNegative,
 } from 'class-validator';
-import { Type } from 'class-transformer';
+import { Type, Transform } from 'class-transformer';
 
 `;
   
@@ -669,15 +716,52 @@ import { Type } from 'class-transformer';
       
       generatedEnums.push(...enums);
       
-      // Find parent class if this schema extends another
+      // Handle multiple inheritance
       let extendsClause = '';
       if (schema.allOf) {
-        for (const subSchema of schema.allOf) {
-          if (subSchema.$ref && subSchema.$ref.startsWith('#/components/schemas/')) {
-            const parentName = subSchema.$ref.replace('#/components/schemas/', '');
-            const parentClassName = getClassNameFromSchemaName(parentName, usedNames);
-            extendsClause = ` extends ${parentClassName}`;
-            break;
+        const parents = getAllParentClasses(schema, openApiDocument);
+        if (parents.length > 0) {
+          // Use the first parent as the direct parent
+          const primaryParent = parents[0];
+          const primaryParentClassName = getClassNameFromSchemaName(primaryParent, usedNames);
+          extendsClause = ` extends ${primaryParentClassName}`;
+          
+          // Create intermediate classes for additional parents if needed
+          if (parents.length > 1) {
+            const intermediateProps = new Set<string>();
+            
+            // Create intermediate classes for each additional parent
+            for (let i = 1; i < parents.length; i++) {
+              const parentName = parents[i];
+              const parentSchema = openApiDocument.components.schemas[parentName];
+              if (!parentSchema) continue;
+              
+              const parentClassName = getClassNameFromSchemaName(parentName, usedNames);
+              const intermediateClassName = `${className}With${parentClassName}`;
+              
+              // Get properties from this parent
+              const { properties: parentProps } = generateClassProperties(
+                parentSchema,
+                [],
+                classMap,
+                openApiDocument,
+                usedNames,
+                parentName,
+                usedEnums
+              );
+              
+              // Filter out properties already included
+              const uniqueProps = parentProps.filter(prop => !intermediateProps.has(prop));
+              uniqueProps.forEach(prop => intermediateProps.add(prop));
+              
+              if (uniqueProps.length > 0) {
+                const intermediateClass = `
+export class ${intermediateClassName} {
+${uniqueProps.join('\n')}
+}`;
+                baseClasses.push(intermediateClass);
+              }
+            }
           }
         }
       }
@@ -774,15 +858,14 @@ ${properties.join('\n')}
           if (extendsClause) {
             childClasses.push(classDefinition);
           } else {
-            baseClasses.push(classDefinition);
-          }
+            baseClasses.push(classDefinition); }
         }
       }
     }
   }
   
   // Add enums first, then base classes, then child classes
-  output += [...new Set(generatedEnums)].join('\n \n');
+  output += [...new Set(generatedEnums)].join('\n\n');
   output += '\n\n';
   output += [...new Set(baseClasses)].join('\n');
   output += '\n\n';
