@@ -305,6 +305,12 @@ function generateClassProperty(
       const refName = schema.$ref.replace('#/components/schemas/', '');
       const className = getClassNameFromSchemaName(refName, usedNames);
       propertyType = className;
+
+      if (refSchema.enum) {
+        decorators.push(`@IsEnum(${className})`);
+      }
+      
+      //decorators.push(...generateDecorators(refSchema, propertyName, isRequired));
       
       // Replace the PLACEHOLDER in the @Type decorator if needed
       const typeDecoratorIndex = decorators.findIndex(d => d.includes('PLACEHOLDER'));
