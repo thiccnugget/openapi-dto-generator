@@ -319,6 +319,73 @@ function generateClassProperty(
   if (schema.$ref) {
     const refSchema = resolveRef(schema.$ref, openApiDocument);
     if (refSchema) {
+      // Check if the referenced schema is an enum
+      if (Array.isArray(refSchema.enum)) {
+        // Clear existing decorators and add enum-specific ones
+        decorators.length = 0;
+        if (!isRequired) {
+          decorators.push('@IsOptional()');
+        }
+        
+        const enumName = refSchema.title || getEnumNameFromProperty(propertyName, refSchema.enum, context, usedEnums);
+        decorators.push(`@IsEnum(${enumName})`);
+        propertyType = enumName;
+        
+        return { 
+          property: `  ${decorators.join('\n  ')}\n  ${formattedPropertyName}${!isRequired ? '?' : ''}: ${propertyType};\n`,
+          nestedClasses,
+          enums
+        };
+      }
+      
+      // Check if the referenced schema is a primitive type
+      else if (refSchema.type === 'string' || refSchema.type === 'number' || refSchema.type === 'integer' || refSchema.type === 'boolean') {
+        // Generate decorators based on the primitive type schema
+        decorators.length = 0; // Clear existing decorators
+        if (!isRequired) {
+          decorators.push('@IsOptional()');
+        }
+        
+        switch (refSchema.type) {
+          case 'string':
+            decorators.push('@IsString()');
+            if (refSchema.format === 'date' || refSchema.format === 'date-time') {
+              decorators.push('@IsDate()');
+              decorators.push('@Transform(({ value }) => value ? new Date(value) : value)');
+              propertyType = 'Date';
+            } else {
+              propertyType = 'string';
+              if (refSchema.format === 'uuid') {
+                decorators.push('@IsUUID()');
+              } else if (refSchema.format === 'email') {
+                decorators.push('@IsEmail()');
+              } else if (refSchema.format === 'uri' || refSchema.format === 'url') {
+                decorators.push('@IsUrl()');
+              }
+            }
+            break;
+          case 'number':
+            decorators.push('@IsNumber()');
+            propertyType = 'number';
+            break;
+          case 'integer':
+            decorators.push('@IsInt()');
+            propertyType = 'number';
+            break;
+          case 'boolean':
+            decorators.push('@IsBoolean()');
+            propertyType = 'boolean';
+            break;
+        }
+        
+        return { 
+          property: `  ${decorators.join('\n  ')}\n  ${formattedPropertyName}${!isRequired ? '?' : ''}: ${propertyType};\n`,
+          nestedClasses,
+          enums
+        };
+      }
+      
+      // Handle non-primitive referenced types
       const refName = schema.$ref.replace('#/components/schemas/', '');
       const className = getClassNameFromSchemaName(refName, usedNames);
       propertyType = className;
@@ -340,7 +407,7 @@ function generateClassProperty(
       };
     }
   }
-  
+
   if (schema.type === 'string') {
     if (schema.format === 'date' || schema.format === 'date-time') {
       propertyType = 'Date';

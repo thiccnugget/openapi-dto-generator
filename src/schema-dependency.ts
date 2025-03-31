@@ -195,7 +195,23 @@ export function resolveRef(ref: string, openApiDocument: OpenAPIDocument): OpenA
   }
   
   const schemaName = ref.replace('#/components/schemas/', '');
-  return openApiDocument.components?.schemas?.[schemaName] || null;
+  const schema = openApiDocument.components?.schemas?.[schemaName];
+  
+  // If the referenced schema is a primitive type or enum, return it directly
+  if (schema && (
+    schema.type === 'string' || 
+    schema.type === 'number' || 
+    schema.type === 'integer' || 
+    schema.type === 'boolean' ||
+    Array.isArray(schema.enum)
+  )) {
+    return {
+      ...schema,
+      title: schemaName // Store the original name for enum handling
+    };
+  }
+  
+  return schema || null;
 }
 
 // Helper function to check if a schema is an enum
