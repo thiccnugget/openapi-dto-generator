@@ -390,12 +390,7 @@ function generateClassProperty(
       const className = getClassNameFromSchemaName(refName, usedNames);
       propertyType = className;
 
-      // Clear existing decorators and add object-specific ones
-      decorators.length = 0;
-      if (!isRequired) {
-        decorators.push('@IsOptional()');
-      }
-      decorators.push('@IsObject()');
+      // Add @ValidateNested and @Type decorators for object types
       decorators.push('@ValidateNested()');
       decorators.push(`@Type(() => ${className})`);
       
@@ -438,6 +433,77 @@ function generateClassProperty(
   } else if (schema.type === 'array' && schema.items) {
     const nestedClassName = getClassNameFromSchemaName(`${propertyName}Item`, usedNames);
     
+    // Handle anyOf with single entry in array items
+    if (schema.items.anyOf && schema.items.anyOf.length === 1) {
+      const singleType = schema.items.anyOf[0];
+      if (singleType.$ref) {
+        const refSchema = resolveRef(singleType.$ref, openApiDocument);
+        if (refSchema) {
+          const refName = singleType.$ref.replace('#/components/schemas/', '');
+          const refClassName = getClassNameFromSchemaName(refName, usedNames);
+          
+          // Clear existing decorators and add array-specific ones
+          decorators.length = 0;
+          if (!isRequired) {
+            decorators.push('@IsOptional()');
+          }
+          decorators.push('@IsArray()');
+          
+          // Check if the referenced type is a primitive or enum
+          if (refSchema.type === 'string' || refSchema.type === 'number' || 
+              refSchema.type === 'integer' || refSchema.type === 'boolean' ||
+              Array.isArray(refSchema.enum)) {
+            // For primitive types and enums in arrays
+            switch (refSchema.type) {
+              case 'string':
+                decorators.push('@IsString({ each: true })');
+                if (refSchema.format === 'date' || refSchema.format === 'date-time') {
+                  decorators.push('@IsDate({ each: true })');
+                  decorators.push('@Transform(({ value }) => value ? value.map(v => new Date(v)) : value)');
+                  propertyType = 'Date[]';
+                } else {
+                  propertyType = 'string[]';
+                  if (refSchema.format === 'uuid') {
+                    decorators.push('@IsUUID(undefined, { each: true })');
+                  } else if (refSchema.format === 'email') {
+                    decorators.push('@IsEmail(undefined, { each: true })');
+                  }
+                }
+                break;
+              case 'number':
+                decorators.push('@IsNumber({}, { each: true })');
+                propertyType = 'number[]';
+                break;
+              case 'integer':
+                decorators.push('@IsInt({ each: true })');
+                propertyType = 'number[]';
+                break;
+              case 'boolean':
+                decorators.push('@IsBoolean({ each: true })');
+                propertyType = 'boolean[]';
+                break;
+              default:
+                if (Array.isArray(refSchema.enum)) {
+                  decorators.push(`@IsEnum(${refClassName}, { each: true })`);
+                  propertyType = `${refClassName}[]`;
+                }
+            }
+          } else {
+            // For object types in arrays
+            decorators.push('@ValidateNested({ each: true })');
+            decorators.push(`@Type(() => ${refClassName})`);
+            propertyType = `${refClassName}[]`;
+          }
+          
+          return {
+            property: `  ${decorators.join('\n  ')}\n  ${formattedPropertyName}${!isRequired ? '?' : ''}: ${propertyType};\n`,
+            nestedClasses,
+            enums
+          };
+        }
+      }
+    }
+    
     // Handle $ref in array items
     if (schema.items.$ref) {
       const refSchema = resolveRef(schema.items.$ref, openApiDocument);
@@ -451,53 +517,10 @@ function generateClassProperty(
           decorators.push('@IsOptional()');
         }
         decorators.push('@IsArray()');
+        decorators.push('@ValidateNested({ each: true })');
+        decorators.push(`@Type(() => ${refClassName})`);
         
-        // Check if the referenced type is a primitive or enum
-        if (refSchema.type === 'string' || refSchema.type === 'number' || 
-            refSchema.type === 'integer' || refSchema.type === 'boolean' ||
-            Array.isArray(refSchema.enum)) {
-          // For primitive types and enums in arrays
-          switch (refSchema.type) {
-            case 'string':
-              decorators.push('@IsString({ each: true })');
-              if (refSchema.format === 'date' || refSchema.format === 'date-time') {
-                decorators.push('@IsDate({ each: true })');
-                decorators.push('@Transform(({ value }) => value ? value.map(v => new Date(v)) : value)');
-                propertyType = 'Date[]';
-              } else {
-                propertyType = 'string[]';
-                if (refSchema.format === 'uuid') {
-                  decorators.push('@IsUUID(undefined, { each: true })');
-                } else if (refSchema.format === 'email') {
-                  decorators.push('@IsEmail(undefined, { each: true })');
-                }
-              }
-              break;
-            case 'number':
-              decorators.push('@IsNumber({}, { each: true })');
-              propertyType = 'number[]';
-              break;
-            case 'integer':
-              decorators.push('@IsInt({ each: true })');
-              propertyType = 'number[]';
-              break;
-            case 'boolean':
-              decorators.push('@IsBoolean({ each: true })');
-              propertyType = 'boolean[]';
-              break;
-            default:
-              if (Array.isArray(refSchema.enum)) {
-                decorators.push(`@IsEnum(${refClassName}, { each: true })`);
-                propertyType = `${refClassName}[]`;
-              }
-          }
-        } else {
-          // For object types in arrays
-          decorators.push('@ValidateNested({ each: true })');
-          decorators.push(`@Type(() => ${refClassName})`);
-          propertyType = `${refClassName}[]`;
-        }
-        
+        propertyType = `${refClassName}[]`;
         return {
           property: `  ${decorators.join('\n  ')}\n  ${formattedPropertyName}${!isRequired ? '?' : ''}: ${propertyType};\n`,
           nestedClasses,
