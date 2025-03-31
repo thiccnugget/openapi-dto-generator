@@ -770,13 +770,8 @@ function generateClassProperties(
   if (mergedProperties) {
     for (const [propertyName, propertySchema] of Object.entries(mergedProperties)) {
       // Skip properties that are already defined in parent classes
-      if(schema.allOf){
-        if (parentProps.has(propertyName)) {
-          if(propertyName === 'type'){
-            console.log(parentProps)
-          }
-          continue;
-        }
+      if(schema.allOf && parentProps.has(propertyName)){
+        continue;
       }
       
       const { property, nestedClasses: propNestedClasses, enums: propEnums } = generateClassProperty(
