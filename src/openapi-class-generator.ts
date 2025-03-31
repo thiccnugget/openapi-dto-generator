@@ -1,10 +1,27 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import * as yaml from 'js-yaml';
 import { OpenAPIDocument, OpenAPISchema, OpenAPIResponse } from './openapi-types';
 import { buildSchemaDependencyGraph, sortSchemasByDependency, getNonParentProperties, resolveRef, isEnumSchema, getEnums } from './schema-dependency';
 
 // Map to store original schema names to generated class names
 const schemaToClassName = new Map<string, string>();
+
+// Helper function to parse OpenAPI file (JSON or YAML)
+function parseOpenAPIFile(filePath: string): OpenAPIDocument {
+  const content = fs.readFileSync(filePath, 'utf-8');
+  const ext = path.extname(filePath).toLowerCase();
+
+  try {
+    if (ext === '.yaml' || ext === '.yml') {
+      return yaml.load(content) as OpenAPIDocument;
+    } else {
+      return JSON.parse(content);
+    }
+  } catch (error) {
+    throw new Error(`Failed to parse OpenAPI file: ${error}`);
+  }
+}
 
 // Helper function to convert snake_case or kebab-case to PascalCase
 function toPascalCase(str: string): string {
@@ -309,8 +326,6 @@ function generateClassProperty(
       if (refSchema.enum) {
         decorators.push(`@IsEnum(${className})`);
       }
-      
-      //decorators.push(...generateDecorators(refSchema, propertyName, isRequired));
       
       // Replace the PLACEHOLDER in the @Type decorator if needed
       const typeDecoratorIndex = decorators.findIndex(d => d.includes('PLACEHOLDER'));
@@ -635,9 +650,8 @@ export function generateClassesFromOpenAPI(openApiFilePath: string, outputFilePa
   // Clear the schema to class name map before starting
   schemaToClassName.clear();
 
-  // Read the OpenAPI document
-  const openApiContent = fs.readFileSync(openApiFilePath, 'utf-8');
-  const openApiDocument: OpenAPIDocument = JSON.parse(openApiContent);
+  // Read and parse the OpenAPI document
+  const openApiDocument = parseOpenAPIFile(openApiFilePath);
   
   let output = `import {
   IsString,
