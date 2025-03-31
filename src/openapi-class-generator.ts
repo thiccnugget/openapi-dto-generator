@@ -385,20 +385,19 @@ function generateClassProperty(
         };
       }
       
-      // Handle non-primitive referenced types
+      // Handle non-primitive referenced types (objects)
       const refName = schema.$ref.replace('#/components/schemas/', '');
       const className = getClassNameFromSchemaName(refName, usedNames);
       propertyType = className;
 
-      if (refSchema.enum) {
-        decorators.push(`@IsEnum(${className})`);
+      // Clear existing decorators and add object-specific ones
+      decorators.length = 0;
+      if (!isRequired) {
+        decorators.push('@IsOptional()');
       }
-      
-      // Replace the PLACEHOLDER in the @Type decorator if needed
-      const typeDecoratorIndex = decorators.findIndex(d => d.includes('PLACEHOLDER'));
-      if (typeDecoratorIndex !== -1) {
-        decorators[typeDecoratorIndex] = decorators[typeDecoratorIndex].replace('PLACEHOLDER', className);
-      }
+      decorators.push('@IsObject()');
+      decorators.push('@ValidateNested()');
+      decorators.push(`@Type(() => ${className})`);
       
       return { 
         property: `  ${decorators.join('\n  ')}\n  ${formattedPropertyName}${!isRequired ? '?' : ''}: ${propertyType};\n`,
@@ -446,13 +445,59 @@ function generateClassProperty(
         const refName = schema.items.$ref.replace('#/components/schemas/', '');
         const refClassName = getClassNameFromSchemaName(refName, usedNames);
         
-        // Replace the PLACEHOLDER in the @Type decorator
-        const typeDecoratorIndex = decorators.findIndex(d => d.includes('PLACEHOLDER'));
-        if (typeDecoratorIndex !== -1) {
-          decorators[typeDecoratorIndex] = decorators[typeDecoratorIndex].replace('PLACEHOLDER', refClassName);
+        // Clear existing decorators and add array-specific ones
+        decorators.length = 0;
+        if (!isRequired) {
+          decorators.push('@IsOptional()');
+        }
+        decorators.push('@IsArray()');
+        
+        // Check if the referenced type is a primitive or enum
+        if (refSchema.type === 'string' || refSchema.type === 'number' || 
+            refSchema.type === 'integer' || refSchema.type === 'boolean' ||
+            Array.isArray(refSchema.enum)) {
+          // For primitive types and enums in arrays
+          switch (refSchema.type) {
+            case 'string':
+              decorators.push('@IsString({ each: true })');
+              if (refSchema.format === 'date' || refSchema.format === 'date-time') {
+                decorators.push('@IsDate({ each: true })');
+                decorators.push('@Transform(({ value }) => value ? value.map(v => new Date(v)) : value)');
+                propertyType = 'Date[]';
+              } else {
+                propertyType = 'string[]';
+                if (refSchema.format === 'uuid') {
+                  decorators.push('@IsUUID(undefined, { each: true })');
+                } else if (refSchema.format === 'email') {
+                  decorators.push('@IsEmail(undefined, { each: true })');
+                }
+              }
+              break;
+            case 'number':
+              decorators.push('@IsNumber({}, { each: true })');
+              propertyType = 'number[]';
+              break;
+            case 'integer':
+              decorators.push('@IsInt({ each: true })');
+              propertyType = 'number[]';
+              break;
+            case 'boolean':
+              decorators.push('@IsBoolean({ each: true })');
+              propertyType = 'boolean[]';
+              break;
+            default:
+              if (Array.isArray(refSchema.enum)) {
+                decorators.push(`@IsEnum(${refClassName}, { each: true })`);
+                propertyType = `${refClassName}[]`;
+              }
+          }
+        } else {
+          // For object types in arrays
+          decorators.push('@ValidateNested({ each: true })');
+          decorators.push(`@Type(() => ${refClassName})`);
+          propertyType = `${refClassName}[]`;
         }
         
-        propertyType = `${refClassName}[]`;
         return {
           property: `  ${decorators.join('\n  ')}\n  ${formattedPropertyName}${!isRequired ? '?' : ''}: ${propertyType};\n`,
           nestedClasses,
@@ -484,15 +529,24 @@ ${nestedClassProperties.properties.join('\n')}
         nestedClasses.push(nestedClass);
         classMap.set(`${propertyName}.items`, nestedClassName);
         
-        // Replace the PLACEHOLDER in the @Type decorator
-        const typeDecoratorIndex = decorators.findIndex(d => d.includes('PLACEHOLDER'));
-        if (typeDecoratorIndex !== -1) {
-          decorators[typeDecoratorIndex] = decorators[typeDecoratorIndex].replace('PLACEHOLDER', nestedClassName);
+        // Clear existing decorators and add array-specific ones
+        decorators.length = 0;
+        if (!isRequired) {
+          decorators.push('@IsOptional()');
         }
+        decorators.push('@IsArray()');
+        decorators.push('@ValidateNested({ each: true })');
+        decorators.push(`@Type(() => ${nestedClassName})`);
         
         propertyType = `${nestedClassName}[]`;
       } else {
         // If the item schema has no properties, use a simple type
+        decorators.length = 0;
+        if (!isRequired) {
+          decorators.push('@IsOptional()');
+        }
+        decorators.push('@IsArray()');
+        
         if (schema.items.type === 'string') {
           decorators.push('@IsString({ each: true })');
           propertyType = 'string[]';
@@ -505,20 +559,15 @@ ${nestedClassProperties.properties.join('\n')}
         } else {
           propertyType = 'any[]';
         }
-        
-        // Remove the @ValidateNested and @Type decorators
-        const validateNestedIndex = decorators.findIndex(d => d.includes('@ValidateNested'));
-        if (validateNestedIndex !== -1) {
-          decorators.splice(validateNestedIndex, 1);
-        }
-        
-        const typeDecoratorIndex = decorators.findIndex(d => d.includes('@Type'));
-        if (typeDecoratorIndex !== -1) {
-          decorators.splice(typeDecoratorIndex, 1);
-        }
       }
     } else {
       // If the item schema has no properties, use a simple type
+      decorators.length = 0;
+      if (!isRequired) {
+        decorators.push('@IsOptional()');
+      }
+      decorators.push('@IsArray()');
+      
       if (schema.items.type === 'string') {
         decorators.push('@IsString({ each: true })');
         propertyType = 'string[]';
@@ -530,17 +579,6 @@ ${nestedClassProperties.properties.join('\n')}
         propertyType = 'boolean[]';
       } else {
         propertyType = 'any[]';
-      }
-      
-      // Remove the @ValidateNested and @Type decorators
-      const validateNestedIndex = decorators.findIndex(d => d.includes('@ValidateNested'));
-      if (validateNestedIndex !== -1) {
-        decorators.splice(validateNestedIndex, 1);
-      }
-      
-      const typeDecoratorIndex = decorators.findIndex(d => d.includes('@Type'));
-      if (typeDecoratorIndex !== -1) {
-        decorators.splice(typeDecoratorIndex, 1);
       }
     }
   } else if (schema.type === 'object' || schema.properties) {
@@ -569,42 +607,33 @@ ${nestedClassProperties.properties.join('\n')}
         nestedClasses.push(nestedClass);
         classMap.set(propertyName, nestedClassName);
         
-        // Replace the PLACEHOLDER in the @Type decorator
-        const typeDecoratorIndex = decorators.findIndex(d => d.includes('PLACEHOLDER'));
-        if (typeDecoratorIndex !== -1) {
-          decorators[typeDecoratorIndex] = decorators[typeDecoratorIndex].replace('PLACEHOLDER', nestedClassName);
+        // Clear existing decorators and add object-specific ones
+        decorators.length = 0;
+        if (!isRequired) {
+          decorators.push('@IsOptional()');
         }
+        decorators.push('@IsObject()');
+        decorators.push('@ValidateNested()');
+        decorators.push(`@Type(() => ${nestedClassName})`);
         
         propertyType = nestedClassName;
       } else {
         // If the object schema has no properties, use Record<string, any>
+        decorators.length = 0;
+        if (!isRequired) {
+          decorators.push('@IsOptional()');
+        }
+        decorators.push('@IsObject()');
         propertyType = 'Record<string, any>';
-        
-        // Remove the @ValidateNested and @Type decorators
-        const validateNestedIndex = decorators.findIndex(d => d.includes('@ValidateNested'));
-        if (validateNestedIndex !== -1) {
-          decorators.splice(validateNestedIndex, 1);
-        }
-        
-        const typeDecoratorIndex = decorators.findIndex(d => d.includes('@Type'));
-        if (typeDecoratorIndex !== -1) {
-          decorators.splice(typeDecoratorIndex, 1);
-        }
       }
     } else {
       // If the object schema has no properties, use Record<string, any>
+      decorators.length = 0;
+      if (!isRequired) {
+        decorators.push('@IsOptional()');
+      }
+      decorators.push('@IsObject()');
       propertyType = 'Record<string, any>';
-      
-      // Remove the @ValidateNested and @Type decorators
-      const validateNestedIndex = decorators.findIndex(d => d.includes('@ValidateNested'));
-      if (validateNestedIndex !== -1) {
-        decorators.splice(validateNestedIndex, 1);
-      }
-      
-      const typeDecoratorIndex = decorators.findIndex(d => d.includes('@Type'));
-      if (typeDecoratorIndex !== -1) {
-        decorators.splice(typeDecoratorIndex, 1);
-      }
     }
   }
   
