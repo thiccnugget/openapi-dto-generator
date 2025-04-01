@@ -716,31 +716,6 @@ function mergeParentProperties(
   };
 }
 
-// Helper function to get all properties from parent classes
-function getParentProperties(schema: OpenAPISchema, openApiDocument: OpenAPIDocument): Set<string> {
-  const parentProps = new Set<string>();
-  
-  if (schema.allOf) {
-    for (const subSchema of schema.allOf) {
-      if (subSchema.$ref) {
-        const parentSchema = resolveRef(subSchema.$ref, openApiDocument);
-        if (parentSchema) {
-          // Get properties from this parent
-          if (parentSchema.properties) {
-            Object.keys(parentSchema.properties).forEach(prop => parentProps.add(prop));
-          }
-          
-          // Recursively get properties from parent's parents
-          const grandParentProps = getParentProperties(parentSchema, openApiDocument);
-          grandParentProps.forEach(prop => parentProps.add(prop));
-        }
-      }
-    }
-  }
-  
-  return parentProps;
-}
-
 // Helper function to generate class properties from a schema
 function generateClassProperties(
   schema: OpenAPISchema,
@@ -756,9 +731,6 @@ function generateClassProperties(
   const enums: string[] = [];
   const usedProperties = new Set<string>();
   
-  // Get all properties from parent classes
-  const parentProps = getParentProperties(schema, openApiDocument);
-  
   // Get merged properties from all parents
   const { properties: mergedProperties, required: mergedRequired } = mergeParentProperties(
     schema,
@@ -769,11 +741,6 @@ function generateClassProperties(
   
   if (mergedProperties) {
     for (const [propertyName, propertySchema] of Object.entries(mergedProperties)) {
-      // Skip properties that are already defined in parent classes
-      if(schema.allOf && parentProps.has(propertyName)){
-        continue;
-      }
-      
       const { property, nestedClasses: propNestedClasses, enums: propEnums } = generateClassProperty(
         propertyName,
         propertySchema,
